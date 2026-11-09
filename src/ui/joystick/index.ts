@@ -30,6 +30,11 @@ export default class Joystick {
   clickTimeout?: ReturnType<typeof setTimeout>
   clickInterval?: ReturnType<typeof setInterval>
   hold = false
+  /** called when the on-screen menu button is tapped */
+  onMenu?: () => void
+  /** only steer and act while the game is running, not behind the menu */
+  enabled = false
+  private initialized = false
 
   // emit keyboard event
   private emitKeyboardEvent = (key: string) => {
@@ -81,7 +86,22 @@ export default class Joystick {
     }
   }
 
-  init = () => {
+  show = () => {
+    this.enabled = true
+    if (!this.initialized) this.init()
+    document.querySelector('.joystick')?.classList.remove('hidden')
+  }
+
+  hide = () => {
+    this.enabled = false
+    this.clickTimeout && clearTimeout(this.clickTimeout)
+    this.clickInterval && clearInterval(this.clickInterval)
+    this.hold = false
+    document.querySelector('.joystick')?.classList.add('hidden')
+  }
+
+  private init = () => {
+    this.initialized = true
     htmlToDom(UI)
 
     this.initButton({ actionKey: ActionKey.FRONT, key: 'w' })
@@ -92,8 +112,16 @@ export default class Joystick {
     this.initButton({ actionKey: ActionKey.UP, key: ' ' })
     this.initButton({ actionKey: ActionKey.DOWN, key: 'Shift' })
 
+    // menu: the only way back to Save / Settings on a phone
+    const menu = document.querySelector('#action-menu') as HTMLButtonElement
+    for (const type of ['pointerdown', 'pointermove', 'pointerup'] as const) {
+      menu.addEventListener(type, e => e.stopPropagation())
+    }
+    menu.addEventListener('click', () => this.onMenu?.())
+
     // camera control
     document.addEventListener('pointermove', e => {
+      if (!this.enabled) return
       if (this.pageX !== 0 || this.pageY !== 0) {
         this.euler.setFromQuaternion(this.control.camera.quaternion)
         this.euler.y -= 0.01 * (e.pageX - this.pageX)
@@ -111,6 +139,7 @@ export default class Joystick {
 
     // click control
     document.addEventListener('pointerdown', e => {
+      if (!this.enabled) return
       this.clickX = e.pageX
       this.clickY = e.pageY
 
@@ -126,6 +155,7 @@ export default class Joystick {
     })
 
     document.addEventListener('pointerup', e => {
+      if (!this.enabled) return
       this.clickTimeout && clearTimeout(this.clickTimeout)
       this.clickInterval && clearInterval(this.clickInterval)
 

@@ -7,6 +7,7 @@ import Block from '../terrain/mesh/block'
 import Noise from '../terrain/noise'
 import Audio from '../audio'
 import { isMobile } from '../utils'
+import { GAME_LOCK, GameLockDetail } from './look'
 enum Side {
   front,
   back,
@@ -298,6 +299,7 @@ export default class Control {
               BlockType.bedrock
             ) {
               this.terrain.generateAdjacentBlocks(position)
+              this.terrain.markEdited()
               return
             }
 
@@ -383,6 +385,7 @@ export default class Control {
 
             // generate adjacent blocks
             this.terrain.generateAdjacentBlocks(position)
+            this.terrain.markEdited()
           }
         }
         break
@@ -436,6 +439,7 @@ export default class Control {
                 true
               )
             )
+            this.terrain.markEdited()
           }
         }
         break
@@ -485,9 +489,10 @@ export default class Control {
   }
 
   initEventListeners = () => {
-    // add / remove handler when pointer lock / unlock
-    document.addEventListener('pointerlockchange', () => {
-      if (document.pointerLockElement) {
+    // add / remove handlers when play starts / pauses (any look mode)
+    document.addEventListener(GAME_LOCK, e => {
+      const { locked, mode } = (e as CustomEvent<GameLockDetail>).detail
+      if (locked) {
         document.body.addEventListener(
           'keydown',
           this.changeHoldingBlockHandler
@@ -495,8 +500,11 @@ export default class Control {
         document.body.addEventListener('wheel', this.wheelHandler)
         document.body.addEventListener('keydown', this.setMovementHandler)
         document.body.addEventListener('keyup', this.resetMovementHandler)
-        document.body.addEventListener('mousedown', this.mousedownHandler)
-        document.body.addEventListener('mouseup', this.mouseupHandler)
+        // drag mode routes clicks through Look; touch through the joystick
+        if (mode === 'pointer') {
+          document.body.addEventListener('mousedown', this.mousedownHandler)
+          document.body.addEventListener('mouseup', this.mouseupHandler)
+        }
       } else {
         document.body.removeEventListener(
           'keydown',
@@ -507,6 +515,7 @@ export default class Control {
         document.body.removeEventListener('keyup', this.resetMovementHandler)
         document.body.removeEventListener('mousedown', this.mousedownHandler)
         document.body.removeEventListener('mouseup', this.mouseupHandler)
+        this.mouseupHandler()
         this.velocity = new THREE.Vector3(0, 0, 0)
       }
     })

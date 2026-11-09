@@ -1,4 +1,9 @@
+html,
 body {
+  height: 100%;
+}
+body {
+  background-color: #87ceeb;
   font-family: Minecraft, Avenir, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -305,4 +310,108 @@ body {
   -ms-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
+}
+
+/* ── Flinsh build additions ─────────────────────────────────────────── */
+
+canvas {
+  display: block;
+}
+
+.fps {
+  top: env(safe-area-inset-top);
+  left: env(safe-area-inset-left);
+}
+
+.bag {
+  top: auto;
+  bottom: env(safe-area-inset-bottom);
+  transform: translate(-50%, 0);
+}
+
+/* one-line hint shown when pointer lock is unavailable (drag-to-look) */
+.look-hint {
+  position: fixed;
+  left: 50%;
+  top: calc(12px + env(safe-area-inset-top));
+  transform: translate(-50%, 0);
+  max-width: calc(100vw - 32px);
+  padding: 6px 12px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: white;
+  font-size: 0.9rem;
+  background-color: hsla(0, 0%, 11%, 0.6);
+  pointer-events: none;
+}
+
+.save-modal.error,
+.load-modal.error {
+  background-color: #8a1c1c;
+  border-color: #c94b4b #4a0d0d #4a0d0d #c94b4b;
+}
+
+.save-modal,
+.load-modal,
+.button {
+  max-width: calc(100vw - 48px);
+}
+.button {
+  min-height: 44px;
+}
+
+.features,
+.settings {
+  width: min(300px, calc(100vw - 92px));
+  max-height: calc(100% - 40px);
+  overflow-y: auto;
+  box-sizing: content-box;
+}
+
+.menu {
+  box-sizing: border-box;
+  height: 100%;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+.footer {
+  top: auto;
+  bottom: env(safe-area-inset-bottom);
+  transform: translate(-50%, 0);
+  white-space: nowrap;
+}
+
+/* short screens: phones in landscape, small Flinsh panels */
+@media (max-height: 560px) {
+  .menu {
+    padding-top: max(12px, env(safe-area-inset-top));
+  }
+  .button {
+    margin-bottom: 8px;
+    padding: 6px 10px;
+    font-size: 1rem;
+  }
+  .features,
+  .settings {
+    top: 8px;
+    height: auto;
+    line-height: 1.4rem;
+  }
+  .save-modal,
+  .load-modal {
+    margin-top: 12px;
+  }
+  .footer {
+    display: none;
+  }
+}
+
+/* HUD overlays must not swallow clicks meant for the canvas (drag-to-look) */
+.cross-hair,
+.fps,
+.look-hint {
+  pointer-events: none;
 }

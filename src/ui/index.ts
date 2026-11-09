@@ -3,24 +3,50 @@ import Bag from './bag'
 import Terrain from '../terrain'
 import Block from '../terrain/mesh/block'
 import Control from '../control'
+import Look, { GAME_LOCK, GameLockDetail } from '../control/look'
 import { Mode } from '../player'
 import Joystick from './joystick'
-import { isMobile } from '../utils'
+import { WorldStore, WorldSnapshot } from '../storage'
+import { isEmbedded } from '../flinsh'
 import * as THREE from 'three'
 
 export default class UI {
-  constructor(terrain: Terrain, control: Control) {
+  constructor(terrain: Terrain, control: Control, look: Look) {
     this.fps = new FPS()
     this.bag = new Bag()
     this.joystick = new Joystick(control)
+    this.look = look
+    this.terrain = terrain
 
     this.crossHair.className = 'cross-hair'
     this.crossHair.innerHTML = '+'
     document.body.appendChild(this.crossHair)
 
+    this.hint.className = 'look-hint hidden'
+    this.hint.textContent =
+      'Drag to look · click: break · right-click: place · E: menu'
+    document.body.appendChild(this.hint)
+
+    // a sandboxed frame cannot open the GitHub link (no popups), and on a
+    // phone it covers the menu; the project link lives in the README
+    isEmbedded && this.github?.remove()
+
+    // saving: Flinsh store when available, localStorage otherwise
+    this.world = new WorldStore(this.snapshot)
+    this.world.onError = e => this.toast(`Couldn't save: ${e.message}`, true)
+    terrain.onEdit = () => this.persisted && this.world.requestSave()
+    // start reading the save now, so "Load Game" is instant
+    this.world.load().catch(() => {})
+
+    this.joystick.onMenu = () => look.unlock()
+
     // play
     this.play?.addEventListener('click', () => {
       if (this.play?.innerHTML === 'Play') {
+        // keep the previous world's pending autosave before replacing it
+        this.persisted && this.world.flush().catch(e => this.world.onError?.(e))
+        this.persisted = false
+
         this.onPlay()
 
         // reset game
@@ -31,64 +57,55 @@ export default class UI {
         terrain.noise.leafSeed = Math.random()
         terrain.customBlocks = []
         terrain.initBlocks()
+        terrain.urgentNext = true
         terrain.generate()
         terrain.camera.position.y = 40
         control.player.setMode(Mode.walking)
       }
-      !isMobile && control.control.lock()
+      look.lock()
     })
 
     // save load
-    this.save?.addEventListener('click', () => {
-      if (this.save?.innerHTML === 'Save and Exit') {
-        // save game
-        window.localStorage.setItem(
-          'block',
-          JSON.stringify(terrain.customBlocks)
-        )
-        window.localStorage.setItem('seed', JSON.stringify(terrain.noise.seed))
-
-        window.localStorage.setItem(
-          'position',
-          JSON.stringify({
-            x: terrain.camera.position.x,
-            y: terrain.camera.position.y,
-            z: terrain.camera.position.z
-          })
-        )
-
-        // ui update
-        this.onExit()
-        this.onSave()
+    this.save?.addEventListener('click', async () => {
+      if (!this.save || this.busy) return
+      if (this.save.innerHTML === 'Save and Exit') {
+        this.busy = true
+        try {
+          const report = await this.world.flush()
+          this.persisted = true
+          this.onExit()
+          this.toast(
+            report.backend === 'memory'
+              ? 'Saved for this session only'
+              : 'Game Saved!'
+          )
+        } catch (e) {
+          this.toast(`Couldn't save: ${(e as Error).message}`, true)
+        } finally {
+          this.busy = false
+        }
       } else {
-        // load game
-        terrain.noise.seed =
-          Number(window.localStorage.getItem('seed')) ?? Math.random()
-
-        const customBlocks =
-          (JSON.parse(
-            window.localStorage.getItem('block') || 'null'
-          ) as Block[]) ?? []
-
-        terrain.customBlocks = customBlocks
-        terrain.initBlocks()
-        terrain.generate()
-
-        const position =
-          (JSON.parse(window.localStorage.getItem('position') || 'null') as {
-            x: number
-            y: number
-            z: number
-          }) ?? null
-
-        position && (terrain.camera.position.x = position.x)
-        position && (terrain.camera.position.y = position.y)
-        position && (terrain.camera.position.z = position.z)
-
-        // ui update
+        // lock first, while we still have the click's user activation
         this.onPlay()
-        this.onLoad()
-        !isMobile && control.control.lock()
+        look.lock()
+        this.busy = true
+        try {
+          const snap = await this.world.load()
+          if (snap) {
+            this.applySnapshot(snap)
+            this.persisted = true
+            this.toast('Game Loaded!', false, true)
+          } else {
+            this.newWorldFromLoad()
+            this.toast('No saved game yet: new world', false, true)
+          }
+        } catch (e) {
+          look.unlock()
+          this.onExit()
+          this.toast(`Couldn't load: ${(e as Error).message}`, true)
+        } finally {
+          this.busy = false
+        }
       }
     })
 
@@ -153,32 +170,44 @@ export default class UI {
 
     // menu and fullscreen
     document.body.addEventListener('keydown', (e: KeyboardEvent) => {
-      // menu
-      if (e.key === 'e' && document.pointerLockElement) {
-        !isMobile && control.control.unlock()
+      // menu (drag mode handles E / Esc itself)
+      if (e.key === 'e' && look.mode === 'pointer' && document.pointerLockElement) {
+        look.unlock()
       }
 
-      // fullscreen
+      // fullscreen (refused in a frame without allow="fullscreen"; ignore)
       if (e.key === 'f') {
-        if (document.fullscreenElement) {
-          document.exitFullscreen()
-        } else {
-          document.body.requestFullscreen()
-        }
+        try {
+          const r = document.fullscreenElement
+            ? document.exitFullscreen?.()
+            : document.body.requestFullscreen?.()
+          r?.catch(() => {})
+        } catch {}
       }
     })
 
     // exit
     this.exit?.addEventListener('click', () => {
+      this.persisted && this.world.flush().catch(e => this.world.onError?.(e))
       this.onExit()
     })
 
-    // play / pause handler
-    document.addEventListener('pointerlockchange', () => {
-      if (document.pointerLockElement) {
+    // play / pause handler (pointer lock, drag or touch)
+    document.addEventListener(GAME_LOCK, e => {
+      const { locked } = (e as CustomEvent<GameLockDetail>).detail
+      if (locked) {
         this.onPlay()
       } else {
         this.onPause()
+        // keep the player's position with the world
+        this.persisted && this.world.requestSave()
+      }
+    })
+
+    // the frame can be closed at any time; save what we have
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && this.persisted) {
+        this.world.flush().catch(() => {})
       }
     })
 
@@ -190,16 +219,24 @@ export default class UI {
     // fallback lock handler
     document.querySelector('canvas')?.addEventListener('click', (e: Event) => {
       e.preventDefault()
-      !isMobile && control.control.lock()
+      look.mode === 'pointer' && !look.active && look.lock()
     })
   }
 
   fps: FPS
   bag: Bag
   joystick: Joystick
+  look: Look
+  terrain: Terrain
+  world: WorldStore
+  /** the current world is the saved one, so edits autosave */
+  persisted = false
+  busy = false
 
   menu = document.querySelector('.menu')
   crossHair = document.createElement('div')
+  hint = document.createElement('div')
+  hintTimer?: ReturnType<typeof setTimeout>
 
   // buttons
   play = document.querySelector('#play')
@@ -229,17 +266,78 @@ export default class UI {
 
   settingBack = document.querySelector('#setting-back')
 
+  snapshot = (): WorldSnapshot => {
+    const { noise, camera, customBlocks } = this.terrain
+    return {
+      seeds: {
+        seed: noise.seed,
+        stoneSeed: noise.stoneSeed,
+        treeSeed: noise.treeSeed,
+        coalSeed: noise.coalSeed,
+        leafSeed: noise.leafSeed
+      },
+      position: {
+        x: camera.position.x,
+        y: camera.position.y,
+        z: camera.position.z
+      },
+      // copy: the live list is mutated in place while a save is in flight
+      blocks: customBlocks.map(b => ({
+        x: b.x,
+        y: b.y,
+        z: b.z,
+        type: b.type,
+        placed: b.placed
+      }))
+    }
+  }
+
+  applySnapshot = (snap: WorldSnapshot) => {
+    const terrain = this.terrain
+    Object.assign(terrain.noise, snap.seeds)
+    terrain.customBlocks = snap.blocks.map(
+      b => new Block(b.x, b.y, b.z, b.type, b.placed)
+    )
+    terrain.camera.position.set(snap.position.x, snap.position.y, snap.position.z)
+    // generate around the saved position directly (not around the old one)
+    terrain.chunk.set(
+      Math.floor(snap.position.x / terrain.chunkSize),
+      Math.floor(snap.position.z / terrain.chunkSize)
+    )
+    terrain.previousChunk.copy(terrain.chunk)
+    terrain.initBlocks()
+    terrain.urgentNext = true
+    terrain.generate()
+  }
+
+  newWorldFromLoad = () => {
+    const terrain = this.terrain
+    terrain.noise.seed = Math.random()
+    terrain.customBlocks = []
+    terrain.initBlocks()
+    terrain.urgentNext = true
+    terrain.generate()
+    terrain.camera.position.y = 40
+  }
+
   onPlay = () => {
-    isMobile && this.joystick.init()
+    this.look.mode === 'touch' && this.joystick.show()
     this.menu?.classList.add('hidden')
     this.menu?.classList.remove('start')
     this.play && (this.play.innerHTML = 'Resume')
     this.crossHair.classList.remove('hidden')
     this.github && this.github.classList.add('hidden')
     this.feature?.classList.add('hidden')
+    if (this.look.mode === 'drag' && this.look.active) {
+      this.hint.classList.remove('hidden')
+      clearTimeout(this.hintTimer)
+      this.hintTimer = setTimeout(() => this.hint.classList.add('hidden'), 8000)
+    }
   }
 
   onPause = () => {
+    this.joystick.hide()
+    this.hint.classList.add('hidden')
     this.menu?.classList.remove('hidden')
     this.crossHair.classList.add('hidden')
     this.save && (this.save.innerHTML = 'Save and Exit')
@@ -253,32 +351,23 @@ export default class UI {
     this.feature?.classList.remove('hidden')
   }
 
-  onSave = () => {
-    this.saveModal?.classList.remove('hidden')
+  /** The original's save/load banners, reused for any short message. */
+  toast = (text: string, error = false, loadStyle = false) => {
+    const modal = loadStyle ? this.loadModal : this.saveModal
+    if (!modal) return
+    modal.textContent = text
+    modal.classList.toggle('error', error)
+    modal.classList.remove('hidden')
     setTimeout(() => {
-      this.saveModal?.classList.add('show')
+      modal.classList.add('show')
     })
     setTimeout(() => {
-      this.saveModal?.classList.remove('show')
-    }, 1000)
+      modal.classList.remove('show')
+    }, error ? 3000 : 1000)
 
     setTimeout(() => {
-      this.saveModal?.classList.add('hidden')
-    }, 1350)
-  }
-
-  onLoad = () => {
-    this.loadModal?.classList.remove('hidden')
-    setTimeout(() => {
-      this.loadModal?.classList.add('show')
-    })
-    setTimeout(() => {
-      this.loadModal?.classList.remove('show')
-    }, 1000)
-
-    setTimeout(() => {
-      this.loadModal?.classList.add('hidden')
-    }, 1350)
+      modal.classList.add('hidden')
+    }, error ? 3350 : 1350)
   }
 
   update = () => {

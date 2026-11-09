@@ -1,4 +1,5 @@
 <div class="joystick">
+  <button id="action-menu" class="joystick-menu" aria-label="Menu">☰</button>
   <button id="action-front" class="joystick-button front" role="div">🔼</button>
   <button id="action-left" class="joystick-button left" role="div">◀️</button>
   <button id="action-right" class="joystick-button right" role="div">▶️</button>
@@ -11,11 +12,24 @@
 </div>
 
 <style>
+  .joystick-menu {
+    position: fixed;
+    top: calc(6px + env(safe-area-inset-top));
+    right: calc(6px + env(safe-area-inset-right));
+    width: 48px;
+    height: 48px;
+    font-size: 26px;
+    color: white;
+    border: 2px solid rgb(141, 139, 139);
+    background-color: hsla(0, 0%, 11%, 0.5);
+  }
   .joystick {
     position: fixed;
-    bottom: 0;
+    bottom: env(safe-area-inset-bottom);
+    left: env(safe-area-inset-left);
+    right: env(safe-area-inset-right);
+    box-sizing: border-box;
     display: grid;
-    width: 100%;
     grid-template-columns: repeat(auto-fill, 50px);
     grid-template-rows: repeat(3, 1fr);
     gap: 10px;

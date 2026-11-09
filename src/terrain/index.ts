@@ -4,7 +4,8 @@ import Block from './mesh/block'
 import Highlight from './highlight'
 import Noise from './noise'
 
-import Generate from './worker/generate?worker'
+import GenerateRunner from './generateRunner'
+import { GenerateResult } from './generator'
 
 export enum BlockType {
   grass = 0,
@@ -29,30 +30,31 @@ export default class Terrain {
     this.highlight = new Highlight(scene, camera, this)
     this.scene.add(this.cloud)
 
-    // generate worker callback handler
-    this.generateWorker.onmessage = (
-      msg: MessageEvent<{
-        idMap: Map<string, number>
-        arrays: ArrayLike<number>[]
-        blocksCount: number[]
-      }>
-    ) => {
-      this.resetBlocks()
-      this.idMap = msg.data.idMap
-      this.blocksCount = msg.data.blocksCount
+    // terrain generation: Web Worker from a Blob URL, or main-thread fallback
+    const force = new URLSearchParams(location.search).get('generate')
+    this.generator = new GenerateRunner(
+      this.applyGenerated,
+      force === 'main' ? 'main' : undefined
+    )
+  }
 
-      for (let i = 0; i < msg.data.arrays.length; i++) {
-        this.blocks[i].instanceMatrix = new THREE.InstancedBufferAttribute(
-          (this.blocks[i].instanceMatrix.array = msg.data.arrays[i]),
-          16
-        )
-      }
+  applyGenerated = (data: GenerateResult) => {
+    this.resetBlocks()
+    data.idMap && (this.idMap = data.idMap)
+    this.blocksCount = data.blocksCount
 
-      for (const block of this.blocks) {
-        block.instanceMatrix.needsUpdate = true
-      }
+    for (let i = 0; i < data.arrays.length; i++) {
+      this.blocks[i].instanceMatrix = new THREE.InstancedBufferAttribute(
+        (this.blocks[i].instanceMatrix.array = data.arrays[i]),
+        16
+      )
+    }
+
+    for (const block of this.blocks) {
+      block.instanceMatrix.needsUpdate = true
     }
   }
+
   // core properties
   scene: THREE.Scene
   camera: THREE.PerspectiveCamera
@@ -91,7 +93,15 @@ export default class Terrain {
   highlight: Highlight
 
   idMap = new Map<string, number>()
-  generateWorker = new Generate()
+  generator: GenerateRunner
+
+  /** bumped on every block edit; the save system watches it */
+  editVersion = 0
+  onEdit?: () => void
+  markEdited = () => {
+    this.editVersion++
+    this.onEdit?.()
+  }
 
   // cloud
   cloud = new THREE.InstancedMesh(
@@ -105,6 +115,8 @@ export default class Terrain {
   )
   cloudCount = 0
   cloudGap = 5
+  /** set before generate() when a new or loaded world starts */
+  urgentNext = false
 
   getCount = (type: BlockType) => {
     return this.blocksCount[type]
@@ -150,20 +162,32 @@ export default class Terrain {
 
   generate = () => {
     this.blocksCount = new Array(this.blocks.length).fill(0)
-    // post work to generate worker
-    this.generateWorker.postMessage({
-      distance: this.distance,
-      chunk: this.chunk,
-      noiseSeed: this.noise.seed,
-      treeSeed: this.noise.treeSeed,
-      stoneSeed: this.noise.stoneSeed,
-      coalSeed: this.noise.coalSeed,
-      idMap: new Map<string, number>(),
-      blocksFactor: this.blocksFactor,
-      blocksCount: this.blocksCount,
-      customBlocks: this.customBlocks,
-      chunkSize: this.chunkSize
-    })
+    // the first generation of a new/loaded world blocks nothing the player is
+    // doing yet, so the main-thread fallback may use bigger slices for it
+    const urgent = this.urgentNext
+    this.urgentNext = false
+    this.generator.request(
+      {
+        distance: this.distance,
+        chunk: { x: this.chunk.x, y: this.chunk.y },
+        noiseSeed: this.noise.seed,
+        treeSeed: this.noise.treeSeed,
+        stoneSeed: this.noise.stoneSeed,
+        coalSeed: this.noise.coalSeed,
+        leafSeed: this.noise.leafSeed,
+        blocksFactor: this.blocksFactor,
+        blocksCount: this.blocksCount,
+        customBlocks: this.customBlocks.map(b => ({
+          x: b.x,
+          y: b.y,
+          z: b.z,
+          type: b.type,
+          placed: b.placed
+        })),
+        chunkSize: this.chunkSize
+      },
+      urgent
+    )
 
     // cloud
 

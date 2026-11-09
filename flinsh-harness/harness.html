@@ -1,0 +1,104 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Flinsh app harness</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  html, body { margin: 0; height: 100%; background: #111; color: #ddd; font: 13px system-ui, sans-serif; }
+  #bar { height: 28px; line-height: 28px; padding: 0 10px; white-space: nowrap; overflow: hidden; }
+  iframe { display: block; width: 100%; height: calc(100% - 28px); border: 0; }
+</style>
+<div id="bar">loading…</div>
+<script src="/sandbox.js"></script>
+<script>
+  /*
+   * Runs dist/index.html the way the Flinsh runner does: built by Flinch's own
+   * buildMiniAppDocument() (web/src/lib/miniAppSandbox.ts, bundled to
+   * /sandbox.js), in an iframe with the runner's sandbox attribute, with store
+   * calls answered by Flinch's handleStoreRequest() against a mock store that
+   * enforces the documented limits (256 KB per value, 2 MB and 1,000 keys per
+   * user). The mock store lives in this page's localStorage, so it survives a
+   * reload of the harness.
+   *
+   *   ?csp=base     the runner's CSP exactly as it is today
+   *   ?csp=worker   the same plus "worker-src blob:"
+   *   ?sandbox=...  override the iframe sandbox attribute (e.g. "allow-scripts allow-pointer-lock")
+   */
+  const S = window.FlinshSandbox
+  const params = new URLSearchParams(location.search)
+  const variant = params.get('csp') || 'base'
+  const sandbox = params.get('sandbox') || S.MINI_APP_SANDBOX
+  const csp = variant === 'worker' ? S.MINI_APP_CSP + '; worker-src blob:' : S.MINI_APP_CSP
+
+  const PREFIX = 'mockstore:user:'
+  const VALUE_LIMIT = 256 * 1024
+  const QUOTA_BYTES = 2 * 1024 * 1024
+  const QUOTA_KEYS = 1000
+  const KEY_RE = /^[A-Za-z0-9._\-/ ]{1,256}$/
+  const bytes = v => new TextEncoder().encode(JSON.stringify(v)).length
+  const allKeys = () => Object.keys(localStorage).filter(k => k.startsWith(PREFIX)).map(k => k.slice(PREFIX.length))
+  const usage = () => allKeys().reduce((n, k) => n + localStorage.getItem(PREFIX + k).length, 0)
+  const checkKey = k => {
+    if (!KEY_RE.test(k) || k.includes('..') || k.startsWith('/')) throw new Error('bad key: ' + k)
+  }
+
+  const log = (window.__harness = { variant, csp, sandbox, ready: 0, calls: [], errors: [] })
+
+  const client = {
+    async get(scope, key) {
+      checkKey(key)
+      const raw = localStorage.getItem(PREFIX + key)
+      return raw === null ? null : JSON.parse(raw)
+    },
+    async set(scope, key, value) {
+      checkKey(key)
+      const size = bytes(value)
+      if (size > VALUE_LIMIT) throw new Error(`413 value too big (${size} bytes)`)
+      const old = localStorage.getItem(PREFIX + key)
+      const keys = allKeys().length + (old === null ? 1 : 0)
+      const total = usage() - (old ? old.length : 0) + size
+      if (keys > QUOTA_KEYS) throw new Error('413 over key quota')
+      if (total > QUOTA_BYTES) throw new Error(`413 over quota (${total} bytes)`)
+      localStorage.setItem(PREFIX + key, JSON.stringify(value))
+      return null
+    },
+    async list(scope, prefix) {
+      return allKeys().filter(k => k.startsWith(prefix)).sort()
+    },
+    async delete(scope, key) {
+      checkKey(key)
+      const had = localStorage.getItem(PREFIX + key) !== null
+      localStorage.removeItem(PREFIX + key)
+      return had
+    }
+  }
+
+  window.__store = {
+    dump: () => Object.fromEntries(allKeys().map(k => [k, localStorage.getItem(PREFIX + k).length])),
+    usage,
+    clear: () => allKeys().forEach(k => localStorage.removeItem(PREFIX + k))
+  }
+
+  const frame = document.createElement('iframe')
+  frame.setAttribute('sandbox', sandbox)
+  window.addEventListener('message', async e => {
+    if (e.source !== frame.contentWindow) return
+    const d = e.data || {}
+    if (d.__flinsh === 'ready') log.ready++
+    if (d.__flinsh !== 'store') return
+    const reply = await S.handleStoreRequest(d, ['user'], client)
+    log.calls.push({ op: d.op, key: d.payload && (d.payload.key || d.payload.prefix), error: reply.error })
+    if (reply.error) log.errors.push(reply.error)
+    frame.contentWindow.postMessage({ __flinshReply: d.id, ...reply }, '*')
+  })
+
+  fetch('/app.html')
+    .then(r => r.text())
+    .then(html => {
+      // what buildMiniAppDocument() produces, with the CSP of this variant
+      let doc = S.buildMiniAppDocument({ html, themeCss: ':root{--bg:#111;--text:#eee}', input: {}, permissions: ['store:user'] })
+      doc = doc.replace(S.MINI_APP_CSP, csp)
+      frame.srcdoc = doc
+      document.body.appendChild(frame)
+      document.getElementById('bar').textContent = `csp=${variant} · sandbox="${sandbox}" · ${(html.length / 1048576).toFixed(2)} MB`
+    })
+</script>

@@ -1,6 +1,12 @@
 node_modules
 .DS_Store
-dist
+dist/*
+# the Flinsh entrypoint (flinsh.json) is the built single file: commit it
+!dist/index.html
 dist-ssr
 *.local
 *-lock.yaml
+
+# Flinsh harness outputs
+flinsh-harness/*.png
+flinsh-harness/*.json

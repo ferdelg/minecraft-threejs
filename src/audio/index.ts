@@ -32,6 +32,36 @@ import leaf2 from './blocks/leaf2.ogg'
 import leaf3 from './blocks/leaf3.ogg'
 import leaf4 from './blocks/leaf4.ogg'
 import { isMobile } from '../utils'
+import { GAME_LOCK, GameLockDetail } from '../control/look'
+
+/**
+ * THREE.AudioLoader goes through fetch(), and the Flinsh sandbox CSP
+ * (connect-src 'none') blocks fetch even for data: URLs. In the single-file
+ * build every sound is a data: URI, so decode those directly instead.
+ */
+const loadAudio = (
+  loader: THREE.AudioLoader,
+  context: AudioContext,
+  url: string,
+  onLoad: (buffer: AudioBuffer) => void
+) => {
+  const m = /^data:[^;,]*(;base64)?,/.exec(url)
+  if (!m) {
+    loader.load(url, onLoad)
+    return
+  }
+  try {
+    const payload = url.slice(m[0].length)
+    const bin = m[1] ? atob(payload) : decodeURIComponent(payload)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    context.decodeAudioData(bytes.buffer, onLoad, e =>
+      console.warn('[audio] could not decode sound', e)
+    )
+  } catch (e) {
+    console.warn('[audio] could not load sound', e)
+  }
+}
 
 export default class Audio {
   constructor(camera: THREE.PerspectiveCamera) {
@@ -44,7 +74,7 @@ export default class Audio {
     // load bgm
     const bgm = new THREE.Audio(listener)
     bgm.autoplay = false
-    audioLoader.load(hal3, buffer => {
+    loadAudio(audioLoader, listener.context, hal3, buffer => {
       bgm.setBuffer(buffer)
       bgm.setVolume(0.1)
       bgm.setLoop(true)
@@ -55,10 +85,15 @@ export default class Audio {
     })
 
     // play / pause bgm
-    document.addEventListener('pointerlockchange', () => {
-      if (document.pointerLockElement && !bgm.isPlaying && !this.disabled) {
+    document.addEventListener(GAME_LOCK, e => {
+      const { locked } = (e as CustomEvent<GameLockDetail>).detail
+      // the context starts suspended until a user gesture (Play is one)
+      if (locked && listener.context.state === 'suspended') {
+        listener.context.resume().catch(() => {})
+      }
+      if (locked && !bgm.isPlaying && !this.disabled && bgm.buffer) {
         bgm.play()
-      } else {
+      } else if (!locked && bgm.isPlaying) {
         bgm.pause()
       }
     })
@@ -67,7 +102,7 @@ export default class Audio {
     for (const types of this.sourceSet) {
       const audios: THREE.Audio[] = []
       for (const type of types) {
-        audioLoader.load(type, buffer => {
+        loadAudio(audioLoader, listener.context, type, buffer => {
           const audio = new THREE.Audio(listener!)
           audio.setBuffer(buffer)
           audio.setVolume(0.15)

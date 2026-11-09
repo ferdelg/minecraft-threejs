@@ -1,4 +1,4 @@
-import { ImprovedNoise } from 'three/examples/jsm/math/ImprovedNoise'
+import { ImprovedNoise } from 'three/examples/jsm/math/ImprovedNoise.js'
 // import { SimplexNoise } from 'three/examples/jsm/math/SimplexNoise'
 
 export default class Noise {

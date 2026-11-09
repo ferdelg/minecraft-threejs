@@ -1,0 +1,8 @@
+{
+  "flinsh": "2",
+  "name": "Minecraft (Three.js)",
+  "description": "An infinite voxel world you can dig, build and save. Runs in your browser.",
+  "type": "app",
+  "entrypoint": "dist/index.html",
+  "permissions": ["store:user"]
+}
